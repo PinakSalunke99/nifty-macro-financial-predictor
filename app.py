@@ -1,7 +1,7 @@
-    import streamlit as st
-    import pandas as pd
-    import plotly.express as px
-    import plotly.graph_objects as go
+import streamlit as st
+import pandas as pd
+import plotly.express as px
+import plotly.graph_objects as go 
     from data_engine import NiftyPredictorEngine
 
     # Check if we are running in the cloud (Streamlit Secrets) or locally
