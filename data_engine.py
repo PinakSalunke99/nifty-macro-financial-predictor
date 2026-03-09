@@ -6,7 +6,6 @@ from sklearn.metrics import mean_absolute_percentage_error, mean_squared_error
 
 class NiftyPredictorEngine:
     def __init__(self, fred_api_key=None):
-        # Precise coefficients from Pinak's Research
         self.intercept = -10130.0
         self.coeffs = {
             "USDINR": 2.503, "Repo": 661.7, "FII": 0.001865,
@@ -14,11 +13,10 @@ class NiftyPredictorEngine:
         }
         self.fred = Fred(api_key=fred_api_key) if fred_api_key else None
 
-    def fetch_data(self):
-        """Fetches market data with fallback for fear index analysis."""
+    def fetch_data(self, period="2y"): # Fetches 2 years by default for long-term views
         try:
             tickers = ["^NSEI", "SPY", "INR=X", "^INDIAVIX"]
-            data = yf.download(tickers, period="45d", interval="1d")['Close'].dropna()
+            data = yf.download(tickers, period=period, interval="1d")['Close'].dropna()
             
             latest = {
                 "Nifty_Actual": data['^NSEI'].iloc[-1],
@@ -32,29 +30,19 @@ class NiftyPredictorEngine:
             return None, str(e)
 
     def fetch_live_macro(self):
-        """Fetches India-specific macro data from FRED."""
-        # Baseline fallbacks from your preferred code
         macro = {"Repo_Rate": 6.50, "FII_Inflow": 1250.0, "GDP_Trillion": 3.9, "Inflation": 4.8}
-        
         if not self.fred:
             return macro, "Using Local Baseline (No API Key)"
-
         try:
-            # India CPI (Inflation Proxy) - Series: INDCPIALLMINMEI
             inf_series = self.fred.get_series('INDCPIALLMINMEI')
-            # India GDP (Proxy/Annual Growth) - Series: MKTGDPINA646NWDB
             gdp_series = self.fred.get_series('MKTGDPINA646NWDB')
-            
-            # Update macro dictionary with latest available FRED data
             macro["Inflation"] = round(inf_series.pct_change(periods=12).iloc[-1] * 100, 2)
             macro["GDP_Trillion"] = round(gdp_series.iloc[-1] / 1e12, 2) 
-            
             return macro, "Live Macro Data Sync Success"
         except Exception as e:
             return macro, f"Macro API Fallback Active: {str(e)}"
 
     def predict(self, m_data, s_data):
-        """Calculates equilibrium price and normalized weightage."""
         impacts = {
             "USD/INR Impact": self.coeffs["USDINR"] * m_data["USDINR"],
             "US Market Impact": self.coeffs["SPY"] * m_data["SPY_Price"],
@@ -64,19 +52,20 @@ class NiftyPredictorEngine:
             "Foreign Investment": self.coeffs["FII"] * s_data["FII_Inflow"]
         }
         total_pred = self.intercept + sum(impacts.values())
-        
-        # Normalized Weightage Improvement
         total_abs_impact = sum(abs(v) for v in impacts.values())
         norm_weights = {k: (abs(v) / total_abs_impact) * 100 for k, v in impacts.items()}
         max_var = max(norm_weights, key=norm_weights.get)
-        
         return round(total_pred, 2), impacts, norm_weights, (max_var, round(norm_weights[max_var], 2))
 
-    def get_backtest_with_drift(self, hist_data, s_data):
-        """Generates 30 days of predictions and checks for statistical drift."""
+    def get_backtest_with_drift(self, hist_data, s_data, days_back=30):
+        """Generates predictions for a dynamic window chosen by Pinak."""
         results = []
         errors = []
-        for date, row in hist_data.tail(30).iterrows():
+        
+        # Limit history to the user's selected range
+        window_data = hist_data.tail(days_back)
+        
+        for date, row in window_data.iterrows():
             m_tmp = {"SPY_Price": row["SPY"], "USDINR": row["INR=X"]}
             pred, _, _, _ = self.predict(m_tmp, s_data)
             actual = row["^NSEI"]
@@ -87,8 +76,9 @@ class NiftyPredictorEngine:
         mape = mean_absolute_percentage_error(df['Actual'], df['Predicted']) * 100
         rmse = np.sqrt(mean_squared_error(df['Actual'], df['Predicted']))
         
+        # Drift check compares the very end of the selected window to its beginning
         recent_err = np.mean(errors[-5:])
-        baseline_err = np.mean(errors[:-5])
+        baseline_err = np.mean(errors)
         drift = "High" if (recent_err > baseline_err * 1.5) else "Stable"
         
         return df, round(mape, 2), round(rmse, 2), drift, round(recent_err * 100, 2)
